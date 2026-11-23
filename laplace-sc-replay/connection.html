@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Chat 和 Event Bridge 连接</title>
+    <link rel="stylesheet" href="connection.css">
+    <script type="module" src="connection.js"></script>
+  </head>
+  <body>
+    <main>
+      <section aria-labelledby="chat-heading">
+        <h2 id="chat-heading">LAPLACE Chat · 发送</h2>
+        <p id="chat-status">请在 Chat 中登录并开启「弹幕发送」。</p>
+        <a id="chat-settings" href="https://laplace.live/settings" target="_blank" rel="noopener noreferrer">打开 LAPLACE 发送设置</a>
+      </section>
+      <section aria-labelledby="bridge-heading">
+        <h2 id="bridge-heading">Event Bridge · 查重和回执</h2>
+        <p id="bridge-status" role="status">正在读取桥接状态…</p>
+        <ol class="setup">
+          <li>运行 <code>Install-SC-Relay.cmd</code> 启动本机桥接，插件会自动连接。</li>
+          <li>在 Chat 原生齿轮的「Event Bridge 集成」填主机 <code>127.0.0.1</code>、端口 <code id="bridge-address-port">9696</code> 和桥接密码，点击连接。</li>
+        </ol>
+        <button id="bridge-copy" type="button" hidden>复制桥接密码</button>
+        <p id="copy-status" role="status" hidden></p>
+        <details id="bridge-advanced">
+          <summary>自定义桥接端口或密码</summary>
+          <form id="bridge-form" autocomplete="off">
+            <label for="bridge-port">本机端口</label>
+            <input id="bridge-port" type="number" min="1" max="65535" required value="9696">
+            <label for="bridge-token">桥接密码</label>
+            <input id="bridge-token" type="password" spellcheck="false" maxlength="256">
+            <button id="bridge-save" type="submit" disabled>保存连接</button>
+          </form>
+        </details>
+      </section>
+    </main>
+  </body>
+</html>

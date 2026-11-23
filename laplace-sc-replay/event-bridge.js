@@ -6,15 +6,15 @@ const roomPattern = /^[1-9]\d{0,15}$/u;
 const normalize = (text) => text.normalize('NFC').replace(/\s+/gu, ' ').trim();
 const echoText = (text) => normalize(text).replace(/[\s\u200b\u2060]/gu, '');
 
-let config = { enabled: false, port: 9696, uid: '', token: '' };
+const defaultConnection = { port: 9696, token: '' };
+let config = defaultConnection;
 let installed;
 let socket;
 let heartbeat;
 let retry;
 let retryDelay = 1000;
-let state = 'disabled';
-let received = 0;
-let lastRoom = '';
+let state = 'connecting';
+const received = new Map();
 let pendingEcho;
 const history = new Map();
 
@@ -46,16 +46,14 @@ function accept(event) {
   const id = [event.idStr, event.id].find((value) => typeof value === 'string' && value && value !== '0');
   const key = id ? `${room}:${id}` : Symbol();
   if (history.has(key)) return;
-  const username = typeof event.username === 'string' ? event.username.trim().slice(0, 80) : '';
-  history.set(key, { room, text, time, receivedAt: now, uid, username, sender: uid ? `uid:${uid}` : undefined });
+  history.set(key, { room, text, time, receivedAt: now, sender: uid ? `uid:${uid}` : undefined });
   trimHistory(now);
-  received++;
-  lastRoom = room;
+  received.set(room, (received.get(room) ?? 0) + 1);
 
   const echo = pendingEcho;
   if (echo && room === echo.room && time >= echo.started - 3000 && echoText(text) === echo.text) {
-    if (uid === echo.uid) echo.finish('confirmed');
-    else echo.sawOtherUid = true;
+    echo.receivedAt = performance.timeOrigin + performance.now();
+    if (echo.receivedAt >= echo.submittedAt) echo.finish('confirmed');
   }
 }
 
@@ -79,8 +77,7 @@ function connect() {
   current.onopen = () => {
     if (socket !== current) return;
     state = 'connected';
-    received = 0;
-    lastRoom = '';
+    received.clear();
     retryDelay = 1000;
     // Chrome extension service workers need WebSocket traffic during quiet periods.
     heartbeat = setInterval(() => {
@@ -101,11 +98,7 @@ function connect() {
 }
 
 function apply(next) {
-  if (next.enabled === config.enabled && next.port === config.port && next.token === config.token) {
-    if (next.uid !== config.uid) pendingEcho?.finish('cancelled');
-    config = next;
-    return;
-  }
+  if (socket && next.port === config.port && next.token === config.token && state !== 'disconnected') return;
   const previous = socket;
   socket = undefined;
   previous?.close();
@@ -113,23 +106,27 @@ function apply(next) {
   clearTimeout(retry);
   pendingEcho?.finish('disconnected');
   history.clear();
-  received = 0;
-  lastRoom = '';
+  received.clear();
   retryDelay = 1000;
   config = next;
-  state = 'disabled';
-  if (config.enabled) connect();
+  connect();
 }
 
 function settings(value, previous = {}) {
-  const { enabled, port, uid } = value;
-  const token = enabled ? (value.token || (port === previous.port ? previous.token : '') || '') : '';
-  if (typeof enabled !== 'boolean' || !Number.isInteger(port) || port < 1 || port > 65535 ||
-      typeof uid !== 'string' || (uid && !roomPattern.test(uid)) || typeof token !== 'string' ||
+  const { port } = value;
+  const token = value.token || (port === previous.port ? previous.token : '') || '';
+  if (!Number.isInteger(port) || port < 1 || port > 65535 ||
+      typeof token !== 'string' ||
       (token && !/^[!#$%&'*+.^_`|~\w-]{1,256}$/u.test(token)) || token === 'laplace-event-bridge-role-client') {
-    throw new Error('请检查 Event Bridge 端口、发送账号 UID 和密码格式。');
+    throw new Error('请检查 Event Bridge 端口和密码格式。');
   }
-  return { enabled, port, uid, token };
+  return { port, token };
+}
+
+function storeConnection(connection) {
+  const { port, token } = connection;
+  const saved = installed?.port === port && installed.token === token ? { port } : connection;
+  return chrome.storage.local.set({ [settingsKey]: saved });
 }
 
 async function installerSettings() {
@@ -137,44 +134,33 @@ async function installerSettings() {
     const response = await fetch(chrome.runtime.getURL('bridge-instance.json'), { cache: 'no-store' });
     if (!response.ok) return;
     const { port, token } = await response.json();
-    if (typeof token === 'string' && /^[0-9a-f]{32}$/u.test(token)) return settings({ enabled: true, port, token, uid: '' });
+    if (typeof token === 'string' && /^[0-9a-f]{32}$/u.test(token)) return settings({ port, token });
   } catch { /* The extension may have been installed without the Windows launcher. */ }
 }
 
-export const bridgeReady = Promise.all([chrome.storage.local.get(settingsKey), installerSettings()]).then(([stored, local]) => {
+export const bridgeReady = Promise.all([chrome.storage.local.get(settingsKey), installerSettings()]).then(async ([stored, local]) => {
   installed = local;
   const saved = stored[settingsKey];
-  if (saved) apply(settings(saved, installed));
-  else apply(installed ?? { enabled: true, port: 9696, uid: '', token: '' });
-}).catch(() => {});
+  const next = saved && saved.enabled !== false ? settings(saved, installed) : installed ?? defaultConnection;
+  apply(next);
+  if (saved && (Object.hasOwn(saved, 'uid') || Object.hasOwn(saved, 'enabled'))) await storeConnection(next);
+}).catch(() => { if (!socket) apply(installed ?? defaultConnection); });
 
 export async function configureBridge(input) {
   await bridgeReady;
   const previous = input.port === config.port && config.token ? config : installed;
   const next = settings(input, previous);
-  const saved = { ...next };
-  if (installed?.port === saved.port && installed.token === saved.token) delete saved.token;
-  await chrome.storage.local.set({ [settingsKey]: saved });
+  await storeConnection(next);
   apply(next);
 }
 
 export function bridgeStatus(room = '') {
-  const accounts = new Map();
-  if (room) {
-    for (const { room: origin, uid, username } of [...history.values()].reverse()) {
-      if (origin !== room || !username || !roomPattern.test(uid) || accounts.has(uid)) continue;
-      accounts.set(uid, { uid, username });
-      if (accounts.size >= 30) break;
-    }
-  }
-  return { enabled: config.enabled, port: config.port, uid: config.uid, hasToken: Boolean(config.token), state, received, lastRoom,
-    managed: Boolean(installed?.port === config.port && installed.token === config.token), accounts: [...accounts.values()] };
+  return { port: config.port, hasToken: Boolean(config.token), state, received: received.get(room) ?? 0 };
 }
 
 export function bridgePassword() { return config.token; }
 
 export function bridgeHistory(room, seconds) {
-  if (!config.enabled || (state !== 'connected' && !history.size)) return undefined;
   const now = Date.now();
   const cutoff = now - seconds * 1000;
   trimHistory(now);
@@ -182,17 +168,12 @@ export function bridgeHistory(room, seconds) {
     .map(({ time, text, sender }) => ({ time, text, sender }));
 }
 
-export function requireBridge() {
-  if (state !== 'connected') throw new Error('Event Bridge 未连接，请运行安装脚本并查看插件的「Event Bridge」设置。');
-  if (!config.uid) throw new Error('请在插件的「Event Bridge」设置中选择 Chat 发送账号，或填写 B 站 UID。');
-}
-
 export function expectBridgeEcho(room, text) {
-  requireBridge();
+  if (state !== 'connected') throw new Error('Event Bridge 未连接，请启动本机桥接服务并检查 Chat 和插件的连接。');
   pendingEcho?.finish('cancelled');
-  const echo = { room, text: echoText(text), uid: config.uid, started: Date.now(), sawOtherUid: false };
+  const echo = { room, text: echoText(text), started: Date.now(), submittedAt: Infinity, receivedAt: 0 };
   const result = new Promise((resolve) => {
-    const timer = setTimeout(() => echo.finish(echo.sawOtherUid ? 'uid' : 'timeout'), echoTimeout);
+    const timer = setTimeout(() => echo.finish('timeout'), echoTimeout);
     echo.finish = (outcome) => {
       clearTimeout(timer);
       if (pendingEcho === echo) pendingEcho = undefined;
@@ -200,5 +181,13 @@ export function expectBridgeEcho(room, text) {
     };
   });
   pendingEcho = echo;
-  return { result, cancel: () => echo.finish('cancelled') };
+  return {
+    wait(submittedAt) {
+      if (!Number.isFinite(submittedAt) || submittedAt < echo.started - 1000) throw new Error('无法确认 Chat 的提交时间。');
+      echo.submittedAt = submittedAt;
+      if (echo.receivedAt >= submittedAt) echo.finish('confirmed');
+      return result;
+    },
+    cancel: () => echo.finish('cancelled')
+  };
 }

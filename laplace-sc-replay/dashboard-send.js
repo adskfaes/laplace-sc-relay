@@ -19,12 +19,16 @@
     input.dispatchEvent(new InputEvent('input', { bubbles: true, composed: true }));
   }
 
-  function availableInput() {
+  function usableInput() {
     const input = senderInput();
     if (!input?.form || input.matches(':disabled, [readonly], [aria-disabled="true"]') ||
-        !input.getClientRects().length || getComputedStyle(input).visibility !== 'visible') {
-      throw new Error('当前控制台的弹幕发送框不可用，请先开启 LAPLACE Chat 原生弹幕发送。');
-    }
+        !input.getClientRects().length || getComputedStyle(input).visibility !== 'visible') return null;
+    return input;
+  }
+
+  function availableInput() {
+    const input = usableInput();
+    if (!input) throw new Error('当前控制台的弹幕发送框不可用，请先开启 LAPLACE Chat 原生弹幕发送。');
     if (input.value !== '') throw new Error('原生弹幕框中有内容，请先处理草稿后再试。');
     return input;
   }
@@ -51,8 +55,9 @@
 
       const submitter = [...form.elements].find((element) => element.type === 'submit' && !element.matches(':disabled'));
       // Notify the page's submit handler without falling through to an HTML navigation.
+      const submittedAt = performance.timeOrigin + performance.now();
       form.dispatchEvent(new SubmitEvent('submit', { bubbles: true, cancelable: true, submitter }));
-      await confirm();
+      await confirm(submittedAt);
       checkRoom();
     } finally {
       input.removeEventListener('input', trackEdit);
@@ -60,5 +65,5 @@
     }
   }
 
-  globalThis.LaplaceScDashboardSend = { availableInput, inputLimit, send };
+  globalThis.LaplaceScDashboardSend = { availableInput, hasInput: () => Boolean(usableInput()), inputLimit, send };
 })();

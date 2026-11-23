@@ -1,22 +1,15 @@
 {
   "manifest_version": 3,
   "name": "LAPLACE SC 转发",
-  "version": "0.4.1",
+  "version": "0.5.0",
   "description": "从 LAPLACE Chat 控制台把醒目留言转为普通弹幕。",
   "minimum_chrome_version": "120",
-  "permissions": ["storage", "declarativeNetRequestWithHostAccess"],
-  "optional_permissions": ["cookies"],
-  "incognito": "spanning",
-  "host_permissions": [
-    "http://127.0.0.1/*",
-    "https://login-sync.laplace.cn/*",
-    "https://api.bilibili.com/*",
-    "https://api.live.bilibili.com/*"
-  ],
+  "permissions": ["storage"],
+  "host_permissions": ["http://127.0.0.1/*"],
   "background": { "service_worker": "background.js", "type": "module" },
   "web_accessible_resources": [
     {
-      "resources": ["account.html"],
+      "resources": ["connection.html"],
       "matches": ["https://chat.laplace.live/*", "https://laplace.chat/*"]
     }
   ],

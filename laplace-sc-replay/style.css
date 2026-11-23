@@ -147,23 +147,16 @@
   accent-color: #bd527a;
 }
 
-.lsc-account {
-  margin-top: 10px;
-  padding-top: 8px;
-  border-top: 1px solid light-dark(#e3d8df, #50444a);
-}
-
-.lsc-account summary {
-  cursor: pointer;
-  overflow-wrap: anywhere;
-}
-
-.lsc-account-frame {
+.lsc-connection-frame {
   display: block;
   width: 100%;
-  height: 258px;
+  height: 225px;
   border: 0;
-  margin-top: 6px;
+}
+
+.lsc-form {
+  border-top: 1px solid light-dark(#e3d8df, #50444a);
+  padding-top: 5px;
 }
 
 .lsc-dialog-footer {
