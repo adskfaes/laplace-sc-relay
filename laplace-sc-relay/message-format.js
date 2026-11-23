@@ -2,7 +2,7 @@
   'use strict';
 
   const defaults = {
-    prefix: '【', suffix: '】', limit: 20, split: true, interval: 2000,
+    prefix: '【', suffix: '】', limit: 40, split: true, interval: 1500,
     duplicateWindow: 60, duplicateThreshold: 100, allowDuplicateOverride: true
   };
   const graphemes = new Intl.Segmenter(undefined, { granularity: 'grapheme' });

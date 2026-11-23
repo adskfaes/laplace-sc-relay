@@ -33,7 +33,7 @@
     return input;
   }
 
-  async function send(text, confirm, checkRoom) {
+  async function send(text, prepare, confirm, checkRoom) {
     checkRoom();
     const input = availableInput();
     const { form } = input;
@@ -48,6 +48,8 @@
     try {
       updateInput(input, text);
       await wait(0);
+      const decision = await prepare();
+      if (decision.state !== 'send') return decision;
       checkRoom();
       if (userEdited || senderInput() !== input || input.form !== form || input.value !== text || !form.checkValidity()) {
         throw new Error('原生发送框内容或状态已改变，本段未提交。');
@@ -57,8 +59,7 @@
       // Notify the page's submit handler without falling through to an HTML navigation.
       const submittedAt = performance.timeOrigin + performance.now();
       form.dispatchEvent(new SubmitEvent('submit', { bubbles: true, cancelable: true, submitter }));
-      await confirm(submittedAt);
-      checkRoom();
+      return await confirm(submittedAt);
     } finally {
       input.removeEventListener('input', trackEdit);
       if (!userEdited && senderInput() === input && input.value === text) updateInput(input, '');

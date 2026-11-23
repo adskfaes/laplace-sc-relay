@@ -1,4 +1,6 @@
-import { bridgeHistory, bridgePassword, bridgeReady, bridgeStatus, configureBridge, expectBridgeEcho } from './event-bridge.js';
+import { bridgeHistory, bridgePassword, bridgeReady, bridgeSession, bridgeStatus, configureBridge, expectBridgeEcho,
+  onBridgeMessage } from './event-bridge.js';
+import { comparableMessages, createCoverage, findDuplicate, normalize } from './recent-chat.js';
 
 const recentForwardsKey = 'lscRecentForwards';
 const maximumDuplicateWindow = 60 * 60 * 1000;
@@ -6,6 +8,8 @@ const connectionUrl = chrome.runtime.getURL('connection.html');
 const connectionOrigin = new URL(connectionUrl).origin;
 const dashboardHosts = new Set(['chat.laplace.live', 'laplace.chat']);
 const batchLifetime = 60000;
+const observationWindow = 300;
+const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 let batch;
 let nextPostAt = 0;
 let pending = Promise.resolve();
@@ -38,8 +42,21 @@ async function recentActivity(room, window) {
   const seconds = Number.isInteger(window) && window >= 1 && window <= 3600 ? window : 60;
   const cutoff = Date.now() - seconds * 1000;
   const forwards = (await recentForwards()).filter((record) => record.room === room && record.time >= cutoff)
-    .map(({ text, time }) => ({ text: text.normalize('NFC').replace(/\s+/gu, ' ').trim(), time }));
+    .map(({ text, time }) => ({ text: normalize(text), time }));
   return [...bridgeHistory(room, seconds), ...forwards];
+}
+
+onBridgeMessage((event) => {
+  const current = batch;
+  if (!current?.coverage || event.room !== current.room || bridgeSession() !== current.session ||
+      event.time < current.started - 3000) return;
+  current.coverage.observe({ ...event, time: event.receivedAt }, current.next + Number(Boolean(current.echo)));
+  if (current.coverage.covered) current.echo?.cover();
+  if (current.threshold < 100 && !current.next && !current.echo) current.newMessages.push(event);
+});
+
+function validPart(text) {
+  return typeof text === 'string' && text.length <= 80 && text.trim() && !/[\x00-\x1f\x7f]/u.test(text);
 }
 
 function ownsBatch(message, sender) {
@@ -77,13 +94,35 @@ async function handle(message, sender) {
     if (!Number.isInteger(message.interval) || message.interval < 1200 || message.interval > 10000) {
       throw new Error('分段间隔无效，请重新保存设置。');
     }
-    const source = typeof message.source === 'string' && message.source.length <= 4096 ? message.source : undefined;
-    const total = Number.isInteger(message.total) && message.total > 0 ? message.total : 0;
+    const { source, parts, prefix, suffix, threshold } = message;
+    if (typeof source !== 'string' || !source.trim() || source.length > 4096 ||
+        !Array.isArray(parts) || parts.length > 4096 || !parts.every(validPart) ||
+        typeof prefix !== 'string' || typeof suffix !== 'string' || prefix.length + suffix.length > 80 ||
+        !Number.isInteger(threshold) || threshold < 1 || threshold > 100) throw new Error('弹幕正文或转发设置无效。');
     await bridgeReady;
-    const messages = message.force === true ? [] : await recentActivity(room, message.duplicateWindow);
+    const started = Date.now();
+    const session = bridgeSession();
+    const force = message.force === true;
+    const match = comparableMessages(source, parts, prefix, suffix);
+    const coverage = force ? null : createCoverage(match, Math.max(10000, message.interval * 2 + 2000));
+    let decision;
+    if (coverage) {
+      const messages = await recentActivity(room, message.duplicateWindow);
+      const now = Date.now();
+      for (const event of messages.sort((a, b) => a.time - b.time)) {
+        coverage.observe({ ...event, time: Math.min(event.time, now) });
+        if (coverage.covered) break;
+      }
+      if (coverage.covered) decision = { state: 'covered' };
+      else {
+        const score = findDuplicate(messages, match.variants, threshold);
+        if (score !== null) decision = { state: 'suspected', score };
+      }
+    }
     batch = { id: crypto.randomUUID(), room, tabId: sender.tab.id, documentId: sender.documentId,
-      interval: message.interval, next: 0, activeAt: Date.now(), source, total };
-    return { batchId: batch.id, messages };
+      interval: message.interval, next: 0, activeAt: Date.now(), source, parts, match, started, session, coverage,
+      threshold, newMessages: [] };
+    return { batchId: batch.id, decision };
   }
 
   if (!ownsBatch(message, sender) || batch.room !== room) {
@@ -94,28 +133,40 @@ async function handle(message, sender) {
     const echo = current.echo;
     const outcome = await echo.wait(message.submittedAt);
     if (batch !== current || current.echo !== echo) throw new Error('发送会话已结束，请核对公屏。');
+    if (outcome === 'covered' || current.coverage?.covered) return { state: 'covered' };
     if (outcome === 'disconnected') throw new Error('Event Bridge 已断开，本段发送结果未确认。请核对公屏后再试。');
     if (outcome !== 'confirmed') throw new Error('Event Bridge 未收到本段回执。请核对公屏和桥接连接后再试。');
     current.activeAt = Date.now();
     current.next++;
     current.echo = undefined;
-    if (current.source && current.next === current.total) {
+    if (current.next === current.parts.length) {
       await rememberForward(room, current.source).catch(() => {});
     }
-    return {};
+    return { state: 'confirmed' };
   }
-  if (message.type !== 'lsc:part' || current.echo || message.index !== current.next || current.next >= current.total ||
-      typeof message.text !== 'string' || !message.text.trim() || message.text.length > 80 || /[\x00-\x1f\x7f]/u.test(message.text)) {
+  if (message.type !== 'lsc:part' || current.echo || message.index !== current.next || current.next >= current.parts.length) {
     throw new Error('弹幕正文或分段顺序无效。');
   }
 
-  const delay = nextPostAt - Date.now();
-  if (delay > 0) await new Promise((resolve) => setTimeout(resolve, delay));
+  const firstCheck = !current.next && current.coverage ? current.activeAt + observationWindow : 0;
+  const delay = Math.max(firstCheck, nextPostAt) - Date.now();
+  if (delay > 0) await wait(delay);
+  if (current.coverage?.suspect(Date.now(), current.next) && !current.coverage.covered) await wait(observationWindow);
   if (batch !== current) throw new Error('发送会话已结束。');
-  current.echo = expectBridgeEcho(room, message.text);
+  if (current.coverage?.covered) return { state: 'covered' };
+  if (current.coverage?.suspect(Date.now(), current.next)) return { state: 'suspected' };
+  if (!current.next && current.newMessages.length) {
+    const score = findDuplicate(current.newMessages, current.match.variants, current.threshold);
+    if (score !== null) return { state: 'suspected', score };
+    current.newMessages = [];
+  }
+  if (current.session === null || bridgeSession() !== current.session) {
+    throw new Error('Event Bridge 未连续连接，本段未提交。请检查连接后再试。');
+  }
+  current.echo = expectBridgeEcho(room, current.parts[current.next]);
   current.activeAt = Date.now();
   nextPostAt = current.activeAt + current.interval;
-  return {};
+  return { state: 'send' };
 }
 
 chrome.runtime.onMessage.addListener((message, sender, reply) => {

@@ -14,14 +14,13 @@
     error: 'M12 8v4m0 4h.01M10.2 4.8 2.7 18a1.4 1.4 0 0 0 1.2 2h16.2a1.4 1.4 0 0 0 1.2-2L13.8 4.8a2 2 0 0 0-3.6 0Z'
   };
   const { defaults, splitMessage } = globalThis.LaplaceScFormat;
-  const { findDuplicate } = globalThis.LaplaceScRecentChat;
   const dashboardSend = globalThis.LaplaceScDashboardSend;
   const buttonSelector = 'button, [role="button"]';
   const settingsKey = 'laplaceScRelay';
   const previousSettingsKey = 'laplaceScReplay';
   const noticeDuration = 6500;
   const sendLabel = '发送为普通弹幕';
-  const duplicateLabel = '这条内容刚有人发过';
+  const coveredLabel = '已覆盖 · 公屏已有完整内容';
   let settings = { ...defaults };
   let sending = false;
   let toastTimer;
@@ -30,6 +29,7 @@
   let scanTimer;
   const mountedRows = new Set();
   const pendingReads = new Map();
+  const stoppedRows = new Map();
   const fallbackReads = new WeakMap();
   const route = () => location.pathname.match(/^\/dashboard\/([1-9]\d*)\/?$/u)?.[1];
 
@@ -87,7 +87,8 @@
     toastAnimation = undefined;
     toast.hidden = true;
     const pending = takeDuplicateOverride();
-    if (pending) completeRow(pending.row, pending.button, pending.original, duplicateLabel);
+    if (pending?.covered) completeRow(pending.row, pending.button, pending.original, pending.status);
+    else if (pending && isSameRow(pending.row, pending.original)) setIcon(pending.button, 'error', pending.status);
   }
 
   function announce(text, detail) {
@@ -155,6 +156,7 @@
   }
 
   function completeRow(row, button, original, status) {
+    if (original.key) stoppedRows.delete(original.key);
     if (isSameRow(row, original)) {
       showResult(button, 'done', status);
       markRead(row, original);
@@ -167,17 +169,28 @@
     }
   }
 
-  function showDuplicate(row, button, original, score, options) {
-    const allowOverride = options.allowDuplicateOverride && isSameRow(row, original);
-    const percentage = `相似度 ${Math.floor(score)}%`;
-    announce(duplicateLabel, allowOverride ? `${percentage} · 双击纸飞机仍可转发` : percentage);
+  function showStopped(row, button, original, status) {
+    if (original.key) stoppedRows.set(original.key, { text: original.text, status });
+    if (isSameRow(row, original)) setIcon(button, 'error', status);
+    else setIcon(button, 'send', sendLabel);
+  }
+
+  function showInterruption(row, button, original, decision, options, submitted, confirmed, total) {
+    const covered = decision.state === 'covered';
+    const status = covered ? coveredLabel : decision.score === undefined ? '疑似重复 · 有人可能在继续转发' : '疑似重复';
+    const progress = submitted ? `已确认 ${confirmed}/${total} 段` : '';
+    const allowOverride = !submitted && options.allowDuplicateOverride && isSameRow(row, original);
+    const detail = [decision.score !== undefined ? `相似度 ${Math.floor(decision.score)}%` : '', progress,
+      allowOverride ? '双击纸飞机仍可转发' : ''].filter(Boolean).join(' · ');
+    const stoppedStatus = [status, decision.score !== undefined ? `相似度 ${Math.floor(decision.score)}%` : '', progress]
+      .filter(Boolean).join(' · ');
+    announce(status, detail);
+    if (!covered) showStopped(row, button, original, stoppedStatus);
     if (allowOverride) {
-      duplicateOverride = { row, button, original, expires: performance.now() + noticeDuration, started: false };
+      duplicateOverride = { row, button, original, covered, status: stoppedStatus, expires: performance.now() + noticeDuration, started: false };
       row.classList.add('lsc-duplicate-pending');
       setIcon(button, 'send', '双击强制转发这条 SC');
-    } else {
-      completeRow(row, button, original, duplicateLabel);
-    }
+    } else if (covered) completeRow(row, button, original, status);
   }
 
   function isVisible(node) {
@@ -264,8 +277,11 @@
     const text = readBody(row);
     if (!text) return;
     const original = identifyRow(row, room, text);
+    if (original.key) stoppedRows.delete(original.key);
     const options = settings;
     let sent = 0;
+    let submitted = false;
+    let awaitingReceipt = false;
     let batchId;
     let total;
     setSending(true);
@@ -276,7 +292,6 @@
     }
 
     try {
-      const variants = [[text]];
       let parts = [];
       let formatError;
       try {
@@ -284,19 +299,14 @@
       } catch (error) {
         formatError = error;
       }
-      if (parts.length > 1 || (parts.length && (options.prefix || options.suffix))) variants.push(parts);
-      if (parts.length && (options.prefix || options.suffix)) {
-        variants.push(parts.map((part) => part.slice(options.prefix.length, part.length - options.suffix.length)));
-      }
-
       total = parts.length;
-      const batch = await request('lsc:start', { room, interval: options.interval, source: text, total,
+      const batch = await request('lsc:start', { room, interval: options.interval, source: text, parts,
+        prefix: options.prefix, suffix: options.suffix, threshold: options.duplicateThreshold,
         duplicateWindow: options.duplicateWindow, force: Boolean(override) });
       batchId = batch.batchId;
       checkTarget();
-      const score = override ? null : findDuplicate(batch.messages, variants, options.duplicateThreshold);
-      if (score !== null) {
-        showDuplicate(row, button, original, score, options);
+      if (batch.decision) {
+        showInterruption(row, button, original, batch.decision, options, submitted, sent, total);
         return;
       }
       if (formatError) throw formatError;
@@ -304,10 +314,19 @@
       for (const part of parts) {
         if (sent > 0) await new Promise((resolve) => setTimeout(resolve, options.interval));
         checkTarget();
-        setIcon(button, 'waiting', `等待 Event Bridge 回执 ${sent + 1}/${total}`);
-        await request('lsc:part', { room, batchId, text: part, index: sent });
-        await dashboardSend.send(part, (submittedAt) =>
-          request('lsc:dashboard-echo', { room, batchId, index: sent, submittedAt }), checkTarget);
+        setIcon(button, 'waiting', `提交前复查 ${sent + 1}/${total}`);
+        const result = await dashboardSend.send(part, () => request('lsc:part', { room, batchId, index: sent }), (submittedAt) => {
+          submitted = true;
+          awaitingReceipt = true;
+          setIcon(button, 'waiting', `等待 Event Bridge 回执 ${sent + 1}/${total}`);
+          return request('lsc:dashboard-echo', { room, batchId, index: sent, submittedAt });
+        }, checkTarget);
+        awaitingReceipt = false;
+        checkTarget();
+        if (result.state !== 'confirmed') {
+          showInterruption(row, button, original, result, options, submitted, sent, total);
+          return;
+        }
         sent++;
       }
       const status = `已确认 ${total} 条弹幕`;
@@ -315,10 +334,8 @@
       announce(status);
     } catch (error) {
       const progress = sent > 0 ? `已确认 ${sent}/${total} 条。` : '';
-      const status = `${progress}${error.message}`;
-      if (override) completeRow(row, button, original, duplicateLabel);
-      if (isSameRow(row, original)) showResult(button, 'error', status);
-      else setIcon(button, 'send', sendLabel);
+      const status = `${awaitingReceipt ? '结果未知 · ' : ''}${progress}${error.message}`;
+      showStopped(row, button, original, status);
       announce(status);
     } finally {
       if (batchId) await request('lsc:finish', { room, batchId }).catch(() => {});
@@ -354,6 +371,8 @@
       }
       if (row.querySelector('.lsc-send') || !row.querySelector(bodySelector)) continue;
       const button = iconButton('send', sendLabel, 'lsc-send');
+      const stopped = room && stoppedRows.get(eventKey(row, room));
+      if (stopped && !row.matches(nativeReadSelector) && readBody(row) === stopped.text) setIcon(button, 'error', stopped.status);
       const top = row.querySelector('.top');
       if (top) {
         if (getComputedStyle(top).position === 'static') top.classList.add('lsc-card-top');

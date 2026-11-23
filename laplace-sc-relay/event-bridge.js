@@ -1,10 +1,10 @@
+import { compact, normalize } from './recent-chat.js';
+
 const settingsKey = 'lscEventBridge';
 const maxAge = 60 * 60 * 1000;
 const maxEvents = 60000;
 const echoTimeout = 10000;
 const roomPattern = /^[1-9]\d{0,15}$/u;
-const normalize = (text) => text.normalize('NFC').replace(/\s+/gu, ' ').trim();
-const echoText = (text) => normalize(text).replace(/[\s\u200b\u2060]/gu, '');
 
 const defaultConnection = { port: 9696, token: '' };
 let config = defaultConnection;
@@ -14,8 +14,10 @@ let heartbeat;
 let retry;
 let retryDelay = 1000;
 let state = 'connecting';
+let generation = 0;
 const received = new Map();
 let pendingEcho;
+let messageListener;
 const history = new Map();
 
 function timestamp(event, now) {
@@ -46,12 +48,14 @@ function accept(event) {
   const id = [event.idStr, event.id].find((value) => typeof value === 'string' && value && value !== '0');
   const key = id ? `${room}:${id}` : Symbol();
   if (history.has(key)) return;
-  history.set(key, { room, text, time, receivedAt: now, sender: uid ? `uid:${uid}` : undefined });
+  const record = { room, id, text, time, receivedAt: now, sender: uid ? `uid:${uid}` : undefined };
+  history.set(key, record);
   trimHistory(now);
   received.set(room, (received.get(room) ?? 0) + 1);
+  messageListener?.(record);
 
   const echo = pendingEcho;
-  if (echo && room === echo.room && time >= echo.started - 3000 && echoText(text) === echo.text) {
+  if (echo && room === echo.room && time >= echo.started - 3000 && compact(text) === echo.text) {
     echo.receivedAt = performance.timeOrigin + performance.now();
     if (echo.receivedAt >= echo.submittedAt) echo.finish('confirmed');
   }
@@ -77,6 +81,7 @@ function connect() {
   current.onopen = () => {
     if (socket !== current) return;
     state = 'connected';
+    generation++;
     received.clear();
     retryDelay = 1000;
     // Chrome extension service workers need WebSocket traffic during quiet periods.
@@ -160,18 +165,22 @@ export function bridgeStatus(room = '') {
 
 export function bridgePassword() { return config.token; }
 
+export function bridgeSession() { return state === 'connected' ? generation : null; }
+
+export function onBridgeMessage(listener) { messageListener = listener; }
+
 export function bridgeHistory(room, seconds) {
   const now = Date.now();
   const cutoff = now - seconds * 1000;
   trimHistory(now);
   return [...history.values()].filter((event) => event.room === room && event.time >= cutoff)
-    .map(({ time, text, sender }) => ({ time, text, sender }));
+    .map(({ id, time, text, sender }) => ({ id, time, text, sender }));
 }
 
 export function expectBridgeEcho(room, text) {
   if (state !== 'connected') throw new Error('Event Bridge 未连接，请启动本机桥接服务并检查 Chat 和插件的连接。');
   pendingEcho?.finish('cancelled');
-  const echo = { room, text: echoText(text), started: Date.now(), submittedAt: Infinity, receivedAt: 0 };
+  const echo = { room, text: compact(text), started: Date.now(), submittedAt: Infinity, receivedAt: 0 };
   const result = new Promise((resolve) => {
     const timer = setTimeout(() => echo.finish('timeout'), echoTimeout);
     echo.finish = (outcome) => {
@@ -188,6 +197,7 @@ export function expectBridgeEcho(room, text) {
       if (echo.receivedAt >= submittedAt) echo.finish('confirmed');
       return result;
     },
+    cover: () => echo.finish('covered'),
     cancel: () => echo.finish('cancelled')
   };
 }
