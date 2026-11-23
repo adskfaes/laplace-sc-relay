@@ -1,16 +1,24 @@
 import { listBrowserSessions, loadAccount, postDanmaku, resolveRoom } from './bilibili.js';
 import { activateLocalAccount, checkLocalAccount, clearActiveLocalAccount, currentLocalAccount, generateLocalKey,
   listLocalAccounts, loadLocalAccount, recordLocalKey, refreshLocalAccount, removeLocalAccount } from './local-sync.js';
+import { bridgeHistory, bridgePassword, bridgeReady, bridgeStatus, configureBridge, expectBridgeEcho, requireBridge } from './event-bridge.js';
 
 const accountKey = 'lscSenderAccount';
 const recentForwardsKey = 'lscRecentForwards';
 const maximumDuplicateWindow = 60 * 60 * 1000;
 const accountUrl = chrome.runtime.getURL('account.html');
+const accountOrigin = new URL(accountUrl).origin;
 const dashboardHosts = new Set(['chat.laplace.live', 'laplace.chat']);
+const dashboardAccount = { mode: 'dashboard', name: 'LAPLACE Chat 当前账号' };
 const batchLifetime = 60000;
 let batch;
 let nextPostAt = 0;
 let pending = Promise.resolve();
+
+function dropBatch() {
+  batch?.echo?.cancel();
+  batch = undefined;
+}
 
 function dashboardRoom(sender) {
   if (sender.frameId !== 0 || !sender.tab?.id || !sender.documentId) return null;
@@ -32,7 +40,7 @@ function visibleAccount(account) {
 }
 
 async function getAccount() {
-  return (await chrome.storage.session.get(accountKey))[accountKey] || await currentLocalAccount();
+  return (await chrome.storage.session.get(accountKey))[accountKey] || await currentLocalAccount() || dashboardAccount;
 }
 
 async function recentForwards() {
@@ -47,17 +55,59 @@ async function rememberForward(room, text) {
   await chrome.storage.session.set({ [recentForwardsKey]: [...other.slice(-511), { room, text, time: Date.now() }] });
 }
 
+async function confirmPart(current) {
+  current.activeAt = Date.now();
+  current.next++;
+  current.echo = undefined;
+  if (current.source && current.next === current.total) {
+    await rememberForward(current.room, current.source).catch(() => {});
+  }
+}
+
+async function recentActivity(room, window, canonical = room) {
+  const seconds = Number.isInteger(window) && window >= 1 && window <= 3600 ? window : 60;
+  await bridgeReady;
+  const cutoff = Date.now() - seconds * 1000;
+  const forwards = (await recentForwards()).filter((record) => record.room === room && record.time >= cutoff)
+    .map(({ text, time }) => ({ text: text.normalize('NFC').replace(/\s+/gu, ' ').trim(), time }));
+  return { forwards, messages: bridgeHistory(canonical, seconds) };
+}
+
 function ownsBatch(message, sender) {
   return batch && batch.id === message.batchId &&
     batch.tabId === sender.tab.id && batch.documentId === sender.documentId;
 }
 
 async function handle(message, sender) {
-  const isAccountPage = sender.url === accountUrl && sender.origin === new URL(accountUrl).origin;
+  const settingsUrl = sender.origin === accountOrigin && sender.url ? new URL(sender.url) : null;
+  const isAccountPage = Boolean(settingsUrl && `${settingsUrl.origin}${settingsUrl.pathname}` === accountUrl);
+  const settingsRoom = isAccountPage ? settingsUrl.searchParams.get('room') : null;
   const room = dashboardRoom(sender);
   if (sender.id !== chrome.runtime.id || (!isAccountPage && !room)) throw new Error('无法确认扩展请求的来源。');
 
-  if (message.type === 'lsc:account') return { account: visibleAccount(await getAccount()) };
+  if (message.type === 'lsc:account') {
+    const account = visibleAccount(await getAccount());
+    await bridgeReady;
+    const bridge = bridgeStatus();
+    return { account, needsBridgeSetup: account.mode === 'dashboard' && (!bridge.uid || bridge.state !== 'connected') };
+  }
+  if (message.type === 'lsc:bridge-watch' && room) {
+    await bridgeReady;
+    return { bridgeOnly: (await getAccount()).mode === 'dashboard' && bridgeStatus().enabled };
+  }
+  if (isAccountPage && message.type === 'lsc:bridge-status') {
+    await bridgeReady;
+    return { bridge: bridgeStatus(settingsRoom) };
+  }
+  if (isAccountPage && message.type === 'lsc:bridge-password') {
+    await bridgeReady;
+    return { password: bridgePassword() };
+  }
+  if (isAccountPage && message.type === 'lsc:bridge-save') {
+    await configureBridge(message);
+    if (batch?.mode === 'dashboard') dropBatch();
+    return { bridge: bridgeStatus(settingsRoom) };
+  }
   if (isAccountPage && message.type === 'lsc:sessions') return listBrowserSessions();
   if (isAccountPage && message.type === 'lsc:local-accounts') {
     return { accounts: (await listLocalAccounts()).map(visibleAccount), account: visibleAccount(await getAccount()) };
@@ -79,17 +129,19 @@ async function handle(message, sender) {
       await activateLocalAccount(message.id);
     } else {
       await removeLocalAccount(message.id);
-      if (batch?.mode === 'local' && batch.accountId === message.id) batch = undefined;
+      if (batch?.mode === 'local' && batch.accountId === message.id) dropBatch();
       return { account: visibleAccount(await getAccount()), accounts: (await listLocalAccounts()).map(visibleAccount) };
     }
-    batch = undefined;
+    dropBatch();
     await chrome.storage.session.remove(accountKey);
     return { account: visibleAccount(await getAccount()), accounts: (await listLocalAccounts()).map(visibleAccount) };
   }
 
   if (isAccountPage && message.type === 'lsc:bind') {
     let source;
-    if (message.mode === 'browser' && typeof message.storeId === 'string' && message.storeId.length <= 64) {
+    if (message.mode === 'dashboard') {
+      source = dashboardAccount;
+    } else if (message.mode === 'browser' && typeof message.storeId === 'string' && message.storeId.length <= 64) {
       source = { mode: 'browser', storeId: message.storeId };
     } else if (message.mode === 'sync' && typeof message.token === 'string' && message.token.length <= 1024 &&
         (message.authKey === undefined || (typeof message.authKey === 'string' && message.authKey.length <= 1024))) {
@@ -97,8 +149,8 @@ async function handle(message, sender) {
     } else {
       throw new Error('请选择有效的发送会话，或填写 Login Sync 密钥。');
     }
-    const account = await loadAccount(source);
-    batch = undefined;
+    const account = source.mode === 'dashboard' ? source : await loadAccount(source);
+    dropBatch();
     const binding = { ...source, uid: account.uid, name: account.name };
     await clearActiveLocalAccount();
     await chrome.storage.session.set({ [accountKey]: binding });
@@ -108,42 +160,62 @@ async function handle(message, sender) {
   if (isAccountPage && message.type === 'lsc:forget') {
     await chrome.storage.session.remove(accountKey);
     await clearActiveLocalAccount();
-    batch = undefined;
-    return {};
+    dropBatch();
+    return { account: visibleAccount(await getAccount()) };
   }
 
   if (message.type === 'lsc:finish' && room) {
-    if (ownsBatch(message, sender)) batch = undefined;
+    if (ownsBatch(message, sender)) dropBatch();
     return {};
   }
   if (!room || room !== message.room) throw new Error('发送请求与当前直播间房号不一致。');
   if (message.type === 'lsc:recent') {
-    return { forwards: (await recentForwards()).filter((record) => record.room === room) };
+    return { ...await recentActivity(room, message.duplicateWindow), mode: (await getAccount())?.mode ?? null };
   }
-  if (batch && Date.now() - batch.activeAt > batchLifetime) batch = undefined;
+  if (batch && Date.now() - batch.activeAt > batchLifetime) dropBatch();
 
   if (message.type === 'lsc:start') {
     if (batch) throw new Error('已有一条 SC 正在转发，请稍后再试。');
     const stored = await getAccount();
-    if (!stored) throw new Error('请先在 SC 栏齿轮的「发送账号」中绑定要发弹幕的账号。');
+    if (message.expectedMode !== undefined && message.expectedMode !== stored.mode) {
+      throw new Error('发送账号来源已变更，请确认后再试。');
+    }
     if (!Number.isInteger(message.interval) || message.interval < 1200 || message.interval > 10000) {
       throw new Error('分段间隔无效，请重新保存设置。');
     }
-    const account = await (stored.mode === 'local' ? loadLocalAccount(stored) : loadAccount(stored));
-    if (account.uid !== stored.uid) throw new Error('发送会话中的 B 站账号已变更，请在账号设置中重新绑定确认。');
-    const canonical = await resolveRoom(account, room);
+    let account = stored;
+    let canonical = room;
+    if (stored.mode === 'dashboard') {
+      await bridgeReady;
+      requireBridge();
+    } else {
+      account = await (stored.mode === 'local' ? loadLocalAccount(stored) : loadAccount(stored));
+      if (account.uid !== stored.uid) throw new Error('发送会话中的 B 站账号已变更，请在账号设置中重新绑定确认。');
+      canonical = await resolveRoom(account, room);
+    }
     const source = typeof message.source === 'string' && message.source.length <= 4096 ? message.source : undefined;
     const total = Number.isInteger(message.total) && message.total > 0 ? message.total : undefined;
-    const forwards = (await recentForwards()).filter((record) => record.room === room);
+    const recent = await recentActivity(room, message.duplicateWindow, canonical);
     batch = { id: crypto.randomUUID(), room, canonical, account, mode: stored.mode, accountId: stored.id, tabId: sender.tab.id,
       documentId: sender.documentId, interval: message.interval, next: 0, activeAt: Date.now(), source, total };
-    return { batchId: batch.id, account: visibleAccount({ ...stored, name: account.name }), room: canonical, forwards };
+    return { batchId: batch.id, account: visibleAccount({ ...stored, name: account.name }), room: canonical, ...recent };
   }
 
-  if (message.type !== 'lsc:part' || !ownsBatch(message, sender) || batch.room !== room) {
+  if (!ownsBatch(message, sender) || batch.room !== room) {
     throw new Error('本次发送会话已结束，请核对已发送的弹幕后再试。');
   }
-  if (message.index !== batch.next || typeof message.text !== 'string' || !message.text.trim() ||
+  if (message.type === 'lsc:dashboard-echo' && batch.echo && message.index === batch.next) {
+    const current = batch;
+    const outcome = await current.echo.result;
+    if (batch !== current) throw new Error('发送会话已结束，请核对公屏。');
+    if (outcome === 'uid') throw new Error('Event Bridge 收到同文弹幕，但发送者 UID 不符。请核对 Chat 发送账号和弹幕连接方式。');
+    if (outcome === 'disconnected') throw new Error('Event Bridge 已断开，本段发送结果未确认。请核对公屏后再试。');
+    if (outcome !== 'confirmed') throw new Error('Event Bridge 未收到本段回执。请核对公屏和桥接事件后再试。');
+    await confirmPart(current);
+    return {};
+  }
+  if (message.type !== 'lsc:part' || batch.echo || message.index !== batch.next ||
+      (batch.total && batch.next >= batch.total) || typeof message.text !== 'string' || !message.text.trim() ||
       message.text.length > 80 || /[\x00-\x1f\x7f]/u.test(message.text)) {
     throw new Error('弹幕正文或分段顺序无效。');
   }
@@ -153,16 +225,17 @@ async function handle(message, sender) {
   if (delay > 0) await new Promise((resolve) => setTimeout(resolve, delay));
   if (batch !== current) throw new Error('发送会话已结束。');
   nextPostAt = Date.now() + current.interval;
+  if (current.mode === 'dashboard') {
+    current.echo = expectBridgeEcho(current.canonical, message.text);
+    current.activeAt = Date.now();
+    return {};
+  }
   try {
     await postDanmaku(current.account, current.canonical, message.text);
-    current.activeAt = Date.now();
-    current.next++;
-    if (current.source && current.next === current.total) {
-      await rememberForward(room, current.source).catch(() => {});
-    }
+    await confirmPart(current);
     return {};
   } catch (error) {
-    batch = undefined;
+    dropBatch();
     throw error;
   }
 }
@@ -180,9 +253,11 @@ chrome.runtime.onMessage.addListener((message, sender, reply) => {
 });
 
 chrome.tabs.onRemoved.addListener((tabId) => {
-  if (batch?.tabId === tabId) batch = undefined;
+  if (batch?.tabId === tabId) dropBatch();
 });
 
 chrome.permissions.onRemoved.addListener(({ permissions }) => {
-  if (permissions?.includes('cookies') && batch?.mode === 'browser') batch = undefined;
+  if (permissions?.includes('cookies') && batch?.mode === 'browser') dropBatch();
 });
+
+chrome.runtime.onStartup.addListener(() => { void bridgeReady; });

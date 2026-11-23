@@ -43,3 +43,6 @@ button[type="submit"] { background: #934064; border-color: #934064; color: #fff;
 summary { margin-top: 5px; cursor: pointer; }
 #status { margin: 7px 0 0; overflow-wrap: anywhere; }
 #status[data-error="true"] { color: light-dark(#9e243b, #ffa2b2); }
+#bridge-settings { border-top: 1px solid light-dark(#e3d8df, #50444a); margin-top: 10px; }
+#bridge-enabled { width: auto; vertical-align: middle; accent-color: #934064; }
+#bridge-status[data-error="true"] { color: light-dark(#9e243b, #ffa2b2); }

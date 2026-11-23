@@ -16,13 +16,26 @@ const verify = document.querySelector('#verify');
 const forget = document.querySelector('#forget');
 const accountLabel = document.querySelector('#account');
 const status = document.querySelector('#status');
+const bridgeSettings = document.querySelector('#bridge-settings');
+const bridgeForm = document.querySelector('#bridge-form');
+const bridgeStatus = document.querySelector('#bridge-status');
+const bridgeEnabled = document.querySelector('#bridge-enabled');
+const bridgePort = document.querySelector('#bridge-port');
+const bridgeUid = document.querySelector('#bridge-uid');
+const bridgeToken = document.querySelector('#bridge-token');
+const bridgeAccounts = document.querySelector('#bridge-accounts');
+const bridgeCopy = document.querySelector('#bridge-copy');
+const bridgeAdvanced = document.querySelector('#bridge-advanced');
+const bridgeSave = document.querySelector('#bridge-save');
+let bridgePoll;
 let account;
 let granted = false;
 let busy = true;
 
 function setAccount(value) {
   account = value;
-  accountLabel.textContent = account ? `${account.name}（UID ${account.uid}）` : '当前会话未绑定发送账号';
+  accountLabel.textContent = account ? (account.uid ? `${account.name}（UID ${account.uid}）` : account.name) :
+    '当前会话未绑定发送账号';
 }
 
 function setStatus(message, error = false) {
@@ -35,9 +48,11 @@ function render() {
   const local = mode.value === 'local';
   const browsing = mode.value === 'browser';
   const syncing = mode.value === 'sync';
+  const dashboard = mode.value === 'dashboard';
   document.querySelector('#local-settings').hidden = !local;
   document.querySelector('#browser-settings').hidden = !browsing;
   document.querySelector('#sync-settings').hidden = !syncing;
+  document.querySelector('#dashboard-settings').hidden = !dashboard;
   mode.disabled = busy;
   store.disabled = busy || !granted || store.options.length < 2;
   sessionsButton.disabled = busy;
@@ -54,9 +69,9 @@ function render() {
   checkSaved.disabled = busy || !saved.value;
   refreshSaved.disabled = busy || !saved.value;
   removeSaved.disabled = busy || !saved.value;
-  verify.textContent = local ? '验证并记录' : '验证并绑定';
+  verify.textContent = local ? '验证并记录' : dashboard ? '使用控制台当前账号' : '验证并绑定';
   verify.disabled = busy || (browsing && !store.value) || (local && !localToken.value.trim());
-  forget.disabled = busy || !account;
+  forget.disabled = busy || !account || account.mode === 'dashboard';
 }
 
 async function request(type, data) {
@@ -64,6 +79,98 @@ async function request(type, data) {
   if (!result?.ok) throw new Error(result?.error || '扩展后台没有返回结果。');
   return result;
 }
+
+function showBridge(status, error = false) {
+  bridgeStatus.textContent = status;
+  bridgeStatus.dataset.error = String(error);
+}
+
+function renderBridge({ enabled, port, uid, hasToken, state, received, lastRoom, managed, accounts }, fill = false) {
+  if (fill) {
+    bridgeEnabled.checked = enabled;
+    bridgePort.value = port;
+    bridgeUid.value = uid;
+    bridgeToken.value = '';
+  }
+  bridgeCopy.hidden = !hasToken;
+  bridgeToken.placeholder = hasToken ? '留空保留已保存密码' : '与桥接服务一致';
+  if (document.activeElement !== bridgeAccounts) {
+    bridgeAccounts.replaceChildren(new Option(accounts.length ? '选择 Chat 发送账号' : '等待本房间弹幕', ''),
+      ...accounts.map(({ username, uid }) => new Option(`${username}（UID ${uid}）`, uid)));
+    bridgeAccounts.disabled = !accounts.length;
+    if (accounts.some(({ uid }) => uid === bridgeUid.value)) bridgeAccounts.value = bridgeUid.value;
+  }
+  const messages = {
+    disabled: '未启用',
+    connecting: '正在连接本机桥接服务…',
+    disconnected: managed ? '本机桥接未连接。请运行 Install-SC-Relay.cmd 后刷新页面。' :
+      '本机桥接未连接。可运行安装脚本，或检查手动设置的端口和密码。',
+    connected: received ? `已连接 · 收到 ${received.toLocaleString()} 条弹幕 · 最近房间 ${lastRoom}` :
+      `已连接本机桥接 · 正在等待弹幕。请在 Chat 原生设置连接 127.0.0.1:${port}。`
+  };
+  showBridge(messages[state], state === 'disconnected');
+}
+
+async function refreshBridge(fill = false) {
+  if (!fill && bridgeSave.disabled) return;
+  try {
+    const { bridge } = await request('lsc:bridge-status');
+    if (fill || !bridgeSave.disabled) renderBridge(bridge, fill);
+    if (fill && bridge.enabled && (!bridge.uid || bridge.state !== 'connected')) bridgeSettings.open = true;
+  } catch (error) {
+    showBridge(error.message, true);
+  } finally {
+    if (fill) bridgeSave.disabled = false;
+  }
+}
+
+bridgeSettings.addEventListener('toggle', () => {
+  clearInterval(bridgePoll);
+  if (bridgeSettings.open) {
+    void refreshBridge();
+    bridgePoll = setInterval(refreshBridge, 2500);
+  }
+});
+
+bridgeForm.addEventListener('submit', (event) => {
+  event.preventDefault();
+  if (!event.isTrusted || bridgeSave.disabled) return;
+  bridgeSave.disabled = true;
+  showBridge('正在保存设置…');
+  void request('lsc:bridge-save', { enabled: bridgeEnabled.checked, port: bridgePort.valueAsNumber,
+    uid: bridgeUid.value.trim(), token: bridgeToken.value.trim() })
+    .then(({ bridge }) => renderBridge(bridge, true), (error) => showBridge(error.message, true))
+    .finally(() => { bridgeSave.disabled = false; });
+});
+
+void refreshBridge(true);
+
+bridgeAccounts.addEventListener('change', () => {
+  if (bridgeAccounts.value) bridgeUid.value = bridgeAccounts.value;
+});
+
+bridgeCopy.addEventListener('click', async (event) => {
+  if (!event.isTrusted) return;
+  try {
+    const { password } = await request('lsc:bridge-password');
+    if (!password) return;
+    try {
+      await navigator.clipboard.writeText(password);
+      showBridge('密码已复制，可粘贴到 Chat 原生 Event Bridge 设置。');
+    } catch {
+      bridgeAdvanced.open = true;
+      bridgeToken.type = 'text';
+      bridgeToken.value = password;
+      bridgeToken.focus();
+      bridgeToken.select();
+      showBridge('已选中桥接密码，按 Ctrl+C 复制。');
+    }
+  } catch (error) {
+    showBridge(error.message, true);
+  }
+});
+
+bridgeToken.addEventListener('blur', () => { bridgeToken.type = 'password'; });
 
 async function refreshSessions() {
   const current = store.value || account?.storeId || '';
@@ -203,15 +310,19 @@ form.addEventListener('submit', (event) => {
     });
     return;
   }
-  const source = mode.value === 'browser' ? { mode: 'browser', storeId: store.value } :
-    { mode: 'sync', token: token.value, authKey: auth.value.trim() || undefined };
+  const source = { mode: mode.value };
+  if (source.mode === 'browser') source.storeId = store.value;
+  if (source.mode === 'sync') {
+    source.token = token.value;
+    source.authKey = auth.value.trim() || undefined;
+  }
   void update(async () => {
-    setStatus('正在验证 B 站账号…');
+    if (source.mode !== 'dashboard') setStatus('正在验证 B 站账号…');
     const result = await request('lsc:bind', source);
     token.value = '';
     auth.value = '';
     setAccount(result.account);
-    setStatus('验证成功。');
+    setStatus(source.mode === 'dashboard' ? '已选用控制台当前账号。' : '验证成功。');
     notifyAccountChanged();
   });
 });
@@ -219,13 +330,14 @@ form.addEventListener('submit', (event) => {
 forget.addEventListener('click', (event) => {
   if (!event.isTrusted) return;
   void update(async () => {
-    await request('lsc:forget');
+    const result = await request('lsc:forget');
     token.value = '';
     auth.value = '';
     localToken.value = '';
     maskKey(true);
-    setAccount(null);
-    setStatus('已解除绑定。');
+    setAccount(result.account);
+    mode.value = 'dashboard';
+    setStatus('已恢复 Chat 默认发送账号。');
     notifyAccountChanged();
   });
 });
@@ -236,7 +348,7 @@ new ResizeObserver(([item]) => {
 
 void update(async () => {
   setAccount((await request('lsc:account')).account);
-  mode.value = account?.mode || 'local';
+  mode.value = account?.mode || 'dashboard';
   if (mode.value === 'browser') await refreshSessions();
   if (mode.value === 'local') await refreshLocalAccounts();
 });

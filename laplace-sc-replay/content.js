@@ -15,6 +15,7 @@
   };
   const { defaults, splitMessage } = globalThis.LaplaceScFormat;
   const { createRecentChat, findDuplicate } = globalThis.LaplaceScRecentChat;
+  const dashboardSend = globalThis.LaplaceScDashboardSend;
   const recentChat = createRecentChat(readBody);
   const buttonSelector = 'button, [role="button"]';
   const settingsKey = 'laplaceScReplay';
@@ -27,6 +28,7 @@
   let toastAnimation;
   let duplicateOverride;
   let scanTimer;
+  let useBridgeHistory = false;
   const mountedRows = new Set();
   const pendingReads = new Map();
   const fallbackReads = new WeakMap();
@@ -276,42 +278,50 @@
 
     try {
       const variants = [[text]];
-      function checkDuplicate(forwards) {
+      const { duplicateWindow } = options;
+      const recent = await request('lsc:recent', { room, duplicateWindow });
+      checkTarget();
+      const usingDashboard = recent.mode === 'dashboard';
+      function checkDuplicate({ forwards, messages }) {
         if (override) return false;
-        const messages = recentChat.recent(room, options.duplicateWindow, forwards);
-        const score = findDuplicate(messages, variants, options.duplicateThreshold);
+        const candidates = messages ? [...messages, ...forwards] : recentChat.recent(room, duplicateWindow, forwards);
+        const score = findDuplicate(candidates, variants, options.duplicateThreshold);
         if (score === null) return false;
         showDuplicate(row, button, original, score, options);
         return true;
       }
 
-      const recent = override ? {} : await request('lsc:recent', { room });
-      checkTarget();
-
       let parts;
       try {
-        parts = splitMessage(text, options);
+        parts = splitMessage(text, options, usingDashboard ? dashboardSend.inputLimit() : Infinity);
       } catch (error) {
-        if (checkDuplicate(recent.forwards)) return;
+        if (checkDuplicate(recent)) return;
         throw error;
       }
       if (parts.length > 1 || options.prefix || options.suffix) variants.push(parts);
       if (options.prefix || options.suffix) {
         variants.push(parts.map((part) => part.slice(options.prefix.length, part.length - options.suffix.length)));
       }
-      if (checkDuplicate(recent.forwards)) return;
+      if (checkDuplicate(recent)) return;
+      if (usingDashboard) dashboardSend.availableInput();
 
       total = parts.length;
-      setIcon(button, 'waiting', '正在核对 B 站账号与房间');
-      const verified = await request('lsc:start', { room, interval: options.interval, source: text, total });
+      if (!usingDashboard) setIcon(button, 'waiting', '正在核对 B 站账号与房间');
+      const verified = await request('lsc:start', { room, interval: options.interval, source: text, total, duplicateWindow,
+        expectedMode: recent.mode });
       batchId = verified.batchId;
       checkTarget();
-      if (checkDuplicate(verified.forwards)) return;
+      if (checkDuplicate(verified)) return;
       for (const part of parts) {
         if (sent > 0) await new Promise((resolve) => setTimeout(resolve, options.interval));
         checkTarget();
-        setIcon(button, 'waiting', `正在以 ${verified.account.name} 发送 ${sent + 1}/${total}`);
+        const progress = `${sent + 1}/${total}`;
+        setIcon(button, 'waiting', usingDashboard ? `等待 Event Bridge 回执 ${progress}` :
+          `正在以 ${verified.account.name} 发送 ${progress}`);
         await request('lsc:part', { room, batchId, text: part, index: sent });
+        if (usingDashboard) {
+          await dashboardSend.send(part, () => request('lsc:dashboard-echo', { room, batchId, index: sent }), checkTarget);
+        }
         sent++;
       }
       const status = `${verified.account.name} 已发送 ${total} 条弹幕`;
@@ -333,7 +343,7 @@
   function scan() {
     scanTimer = null;
     const room = route();
-    recentChat.observe(room, settings.duplicateWindow);
+    if (!useBridgeHistory) recentChat.observe(room, settings.duplicateWindow);
     const pending = duplicateOverride;
     if (pending && (!isSameRow(pending.row, pending.original) || !pending.row.contains(pending.button))) dismissNotice();
     for (const row of mountedRows) {
@@ -413,11 +423,11 @@
   const accountUrl = chrome.runtime.getURL('account.html');
   const accountOrigin = new URL(accountUrl).origin;
 
-  function refreshAccountSummary(section, expandIfUnbound = false) {
+  function refreshAccountSummary(section, expandForSetup = false) {
     const summary = section.querySelector('summary');
-    void request('lsc:account').then(({ account }) => {
+    void request('lsc:account').then(({ account, needsBridgeSetup }) => {
       summary.textContent = account ? `发送账号 · ${account.name}` : '发送账号 · 未绑定';
-      if (!account && expandIfUnbound) section.open = true;
+      if ((!account || needsBridgeSetup) && expandForSetup) section.open = true;
     }, () => { summary.textContent = '发送账号'; });
   }
 
@@ -428,6 +438,7 @@
       frame.style.height = `${Math.min(600, Math.max(72, Math.ceil(event.data.height)))}px`;
     } else if (event.data?.type === 'lsc:account-changed') {
       refreshAccountSummary(frame.parentElement);
+      refreshBridgeSource();
     }
   });
 
@@ -468,9 +479,15 @@
     const accountSection = element('details', 'lsc-account');
     const accountFrame = element('iframe', 'lsc-account-frame');
     accountFrame.title = '发送账号设置';
+    accountFrame.allow = 'clipboard-write';
     accountSection.append(element('summary', '', '发送账号'), accountFrame);
     accountSection.addEventListener('toggle', () => {
-      if (accountSection.open && !accountFrame.hasAttribute('src')) accountFrame.src = accountUrl;
+      if (accountSection.open && !accountFrame.hasAttribute('src')) {
+        const url = new URL(accountUrl);
+        const room = route();
+        if (room) url.searchParams.set('room', room);
+        accountFrame.src = url.href;
+      }
     });
     refreshAccountSummary(accountSection, true);
 
@@ -522,7 +539,14 @@
         'data-time', 'data-timestamp', 'datetime', 'title', 'data-index', 'data-item-index', 'data-username', 'data-uid'] });
     scan();
   });
+  function refreshBridgeSource() {
+    if (!route()) return;
+    void request('lsc:bridge-watch').then(({ bridgeOnly }) => { useBridgeHistory = bridgeOnly; }).catch(() => {});
+  }
+
+  refreshBridgeSource();
   chrome.storage.onChanged.addListener((changes, area) => {
+    if (area === 'local' && changes.lscEventBridge) refreshBridgeSource();
     if (area === 'local' && changes[settingsKey]) {
       settings = { ...defaults, ...changes[settingsKey].newValue };
       if (!settings.allowDuplicateOverride && duplicateOverride) dismissNotice();

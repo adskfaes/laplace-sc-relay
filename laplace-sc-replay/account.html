@@ -13,10 +13,14 @@
       <form id="binding" autocomplete="off">
         <label for="mode">账号来源</label>
         <select id="mode">
+          <option value="dashboard">LAPLACE Chat 当前账号（默认）</option>
           <option value="local">本机 Login Sync</option>
           <option value="browser">已登录的 B 站会话</option>
           <option value="sync">LAPLACE Login Sync 身份密钥</option>
         </select>
+        <section id="dashboard-settings" hidden>
+          <p class="hint">请开启「弹幕发送」并留空原生输入框。此模式使用下方的 Event Bridge 确认每段弹幕。</p>
+        </section>
         <section id="local-settings">
           <label for="local-token">本机身份密钥</label>
           <div class="session-select">
@@ -53,10 +57,31 @@
         </section>
         <div class="actions">
           <button type="submit" id="verify" disabled>验证并绑定</button>
-          <button type="button" id="forget" disabled>解除绑定</button>
+          <button type="button" id="forget" disabled>恢复默认账号</button>
         </div>
       </form>
       <p id="status" role="status" hidden></p>
+      <details id="bridge-settings">
+        <summary>弹幕事件 · Event Bridge</summary>
+        <p id="bridge-status" class="hint" aria-live="polite">正在读取桥接状态…</p>
+        <button id="bridge-copy" class="local-generate" type="button" hidden>复制本机桥接密码</button>
+        <form id="bridge-form" autocomplete="off">
+          <label for="bridge-accounts">本房间近期发言账号</label>
+          <select id="bridge-accounts" disabled><option value="">等待收到弹幕</option></select>
+          <label for="bridge-uid">Chat 发送账号的 B 站 UID</label>
+          <input id="bridge-uid" type="text" inputmode="numeric" pattern="[1-9][0-9]{0,15}" maxlength="16">
+          <p class="hint">从上方选自己的账号，或直接填写 UID。</p>
+          <details id="bridge-advanced">
+            <summary>手动桥接配置</summary>
+            <label><input id="bridge-enabled" type="checkbox" checked> 启用 Event Bridge</label>
+            <label for="bridge-port">本机端口（127.0.0.1）</label>
+            <input id="bridge-port" type="number" min="1" max="65535" required value="9696">
+            <label for="bridge-token">桥接密码</label>
+            <input id="bridge-token" type="password" spellcheck="false" maxlength="256">
+          </details>
+          <div class="actions"><button id="bridge-save" type="submit" disabled>保存桥接设置</button></div>
+        </form>
+      </details>
     </main>
   </body>
 </html>
