@@ -87,15 +87,26 @@ export function comparableMessages(source, parts, prefix, suffix) {
   const whole = [source, prefix + normalize(source) + suffix];
   const variants = whole.map((text) => [text]);
   if (parts.length) variants.push(parts, bare);
-  return { whole, parts, bare, variants };
+  const framed = [prefix, suffix].every((value) => /^[\p{P}\p{S}]+$/u.test(compact(value)));
+  return { whole, parts, bare, variants, framed };
 }
 
-export function createCoverage({ whole, parts, bare }, maxGap) {
+function hasDistinctContent(text, length, unique) {
+  const characters = text.match(/[\p{L}\p{N}\p{Extended_Pictographic}]/gu);
+  return Boolean(characters && characters.length >= length && new Set(characters).size >= unique);
+}
+
+export function createCoverage({ whole, parts, bare, framed }, maxGap) {
   const completeTexts = new Set(whole.map(compact).filter(Boolean));
   const expected = parts.map((part, index) => new Set([compact(part), compact(bare[index])].filter(Boolean)));
+  const firstPart = compact(parts[0] ?? '');
+  const firstBody = compact(bare[0] ?? '');
+  const distinctiveFirst = hasDistinctContent(firstBody, 6, 4);
+  const distinctiveFramedFirst = framed && hasDistinctContent(firstBody, 4, 3);
   const distinctive = new Set();
   const matchedIds = new Set();
   let matched = 0;
+  let firstPartMatch = -Infinity;
   let lastMatch = 0;
   let lastDistinctive = -1;
   let covered = false;
@@ -108,6 +119,10 @@ export function createCoverage({ whole, parts, bare }, maxGap) {
       covered = true;
       return;
     }
+    if (issued === 0 && expected.length > 1 && expected[0].has(value) &&
+        (distinctiveFirst || (distinctiveFramedFirst && value === firstPart))) {
+      firstPartMatch = time;
+    }
     if (!id || expected.length < 2) return;
     if (time - lastMatch > maxGap) {
       matched = 0;
@@ -117,8 +132,7 @@ export function createCoverage({ whole, parts, bare }, maxGap) {
     }
     if (matchedIds.has(id) || !expected[matched]?.has(value)) return;
     const body = compact(bare[matched]);
-    const informative = body.match(/[\p{L}\p{N}\p{Extended_Pictographic}]/gu);
-    if (informative?.length >= 4 && new Set(informative).size >= 3) {
+    if (hasDistinctContent(body, 4, 3)) {
       distinctive.add(body);
       lastDistinctive = matched;
     }
@@ -131,8 +145,10 @@ export function createCoverage({ whole, parts, bare }, maxGap) {
   return {
     observe,
     get covered() { return covered; },
-    suspect(now, issued) {
-      return now - lastMatch <= maxGap && distinctive.size >= 2 && lastDistinctive >= issued;
+    suspicion(now, issued) {
+      if (now - lastMatch <= maxGap && distinctive.size >= 2 && lastDistinctive >= issued) return 'sequence';
+      if (issued === 0 && now - firstPartMatch <= maxGap) return 'first-part';
+      return null;
     }
   };
 }

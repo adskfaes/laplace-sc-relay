@@ -151,10 +151,11 @@ async function handle(message, sender) {
   const firstCheck = !current.next && current.coverage ? current.activeAt + observationWindow : 0;
   const delay = Math.max(firstCheck, nextPostAt) - Date.now();
   if (delay > 0) await wait(delay);
-  if (current.coverage?.suspect(Date.now(), current.next) && !current.coverage.covered) await wait(observationWindow);
+  if (current.coverage?.suspicion(Date.now(), current.next) && !current.coverage.covered) await wait(observationWindow);
   if (batch !== current) throw new Error('发送会话已结束。');
   if (current.coverage?.covered) return { state: 'covered' };
-  if (current.coverage?.suspect(Date.now(), current.next)) return { state: 'suspected' };
+  const suspicion = current.coverage?.suspicion(Date.now(), current.next);
+  if (suspicion) return { state: 'suspected', reason: suspicion };
   if (!current.next && current.newMessages.length) {
     const score = findDuplicate(current.newMessages, current.match.variants, current.threshold);
     if (score !== null) return { state: 'suspected', score };

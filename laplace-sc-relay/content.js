@@ -177,7 +177,9 @@
 
   function showInterruption(row, button, original, decision, options, submitted, confirmed, total) {
     const covered = decision.state === 'covered';
-    const status = covered ? coveredLabel : decision.score === undefined ? '疑似重复 · 有人可能在继续转发' : '疑似重复';
+    let status = covered ? coveredLabel : '疑似重复';
+    if (decision.reason === 'first-part') status += ' · 公屏已出现首段';
+    if (decision.reason === 'sequence') status += ' · 有人可能在继续转发';
     const progress = submitted ? `已确认 ${confirmed}/${total} 段` : '';
     const allowOverride = !submitted && options.allowDuplicateOverride && isSameRow(row, original);
     const detail = [decision.score !== undefined ? `相似度 ${Math.floor(decision.score)}%` : '', progress,

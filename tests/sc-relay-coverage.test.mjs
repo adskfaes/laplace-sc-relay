@@ -25,9 +25,32 @@ test('complete SC can cover a task before or during a multi-part submission', ()
 
 test('one short matching phrase does not stop a multi-part SC', () => {
   const coverage = createCoverage(comparableMessages('谢谢喝杯热茶', ['【谢谢】', '【喝杯热茶】'], '【', '】'), 10000);
-  coverage.observe(packet('short', '谢谢'));
+  coverage.observe(packet('short', '【谢谢】'));
   assert.equal(coverage.covered, false);
-  assert.equal(coverage.suspect(1100, 0), false);
+  assert.equal(coverage.suspicion(1100, 0), null);
+});
+
+test('matching symbols make a distinctive four-character first part sufficient to pause', () => {
+  const coverage = createCoverage(match, 10000);
+  coverage.observe(packet('plain', '今晚开心'));
+  assert.equal(coverage.suspicion(1100, 0), null);
+  coverage.observe(packet('framed', '【今晚开心】', 1200));
+  assert.equal(coverage.suspicion(1300, 0), 'first-part');
+  assert.equal(coverage.covered, false);
+  assert.equal(coverage.suspicion(1300, 1), null);
+  assert.equal(coverage.suspicion(11201, 0), null);
+});
+
+test('distinctive plain first parts pause, while repeated characters and near matches do not', () => {
+  const text = '未来还会继续精彩';
+  const coverage = createCoverage(comparableMessages(text + '欢迎常来聊天', ['【' + text + '】', '【欢迎常来聊天】'], '【', '】'), 10000);
+  coverage.observe(packet('near', '未来还会继续精采'));
+  assert.equal(coverage.suspicion(1100, 0), null);
+  coverage.observe(packet('exact', text));
+  assert.equal(coverage.suspicion(1100, 0), 'first-part');
+  const repetitive = createCoverage(comparableMessages('哈哈哈哈哈哈加油', ['【哈哈哈哈哈哈】', '【加油】'], '【', '】'), 10000);
+  repetitive.observe(packet('repeat', '【哈哈哈哈哈哈】'));
+  assert.equal(repetitive.suspicion(1100, 0), null);
 });
 
 test('two distinctive parts with an unissued part are suspected until the full ordered sequence appears', () => {
@@ -36,7 +59,7 @@ test('two distinctive parts with an unissued part are suspected until the full o
   coverage.observe(packet('noise', '无关弹幕', 1250), 1);
   coverage.observe(packet('b', '喝杯热茶', 1500), 1);
   assert.equal(coverage.covered, false);
-  assert.equal(coverage.suspect(1600, 1), true);
+  assert.equal(coverage.suspicion(1600, 1), 'sequence');
   coverage.observe(packet('c', parts[2], 1800), 1);
   assert.equal(coverage.covered, true);
 });
@@ -45,7 +68,7 @@ test('only the current task’s issued parts are confirmed through the receipt p
   const coverage = createCoverage(match, 10000);
   parts.forEach((part, index) => coverage.observe(packet(String(index), part, 1000 + index), index + 1));
   assert.equal(coverage.covered, false);
-  assert.equal(coverage.suspect(1030, 3), false);
+  assert.equal(coverage.suspicion(1030, 3), null);
   const single = createCoverage(comparableMessages('谢谢', ['【谢谢】'], '【', '】'), 10000);
   single.observe(packet('self', '【谢谢】'), 1);
   assert.equal(single.covered, false);
