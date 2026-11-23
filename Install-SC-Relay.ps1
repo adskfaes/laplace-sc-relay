@@ -8,7 +8,7 @@ param(
 $ErrorActionPreference = 'Stop'
 & (Join-Path $PSScriptRoot 'Start-SC-Event-Bridge.ps1') -Port $BridgePort
 
-$extensionPath = Join-Path $PSScriptRoot 'laplace-sc-replay'
+$extensionPath = Join-Path $PSScriptRoot 'laplace-sc-relay'
 Write-Host "Load or reload this unpacked extension: $extensionPath"
 if ($Browser -ne 'None') {
     try {

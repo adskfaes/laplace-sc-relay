@@ -1,11 +1,11 @@
-# SC 转发扩展 for LAPLACE Chat
+# LAPLACE SC Relay
 
 适用于 Chrome 和 Edge 的第三方扩展。在 LAPLACE Chat 的单房间控制台点击 SC 卡片的纸飞机，即可用 Chat 当前账号把正文转为普通弹幕。
 
 ## 安装和连接（Windows x64）
 
 1. 下载或克隆仓库，运行项目根目录的 [Install-SC-Relay.cmd](Install-SC-Relay.cmd)。它会下载并校验官方 Event Bridge 服务端、启动本机桥接、写入插件的连接配置并打开 Chrome 扩展管理页。使用 Edge 时运行 `Install-SC-Relay.cmd -Browser Edge`。
-2. 在扩展管理页开启开发者模式，选择「加载已解压的扩展程序」，选中 `laplace-sc-replay` 文件夹。已有安装点「重新加载」即可。 [Chrome 加载说明](https://developer.chrome.com/docs/extensions/get-started/tutorial/hello-world#load-unpacked)
+2. 在扩展管理页开启开发者模式，选择「加载已解压的扩展程序」，选中 `laplace-sc-relay` 文件夹。需要保留原来的扩展 ID 和设置时，将新版扩展文件更新到原安装路径后点「重新加载」。从新路径加载会创建新的扩展 ID。 [Chrome 加载说明](https://developer.chrome.com/docs/extensions/get-started/tutorial/hello-world#load-unpacked) · [扩展 ID 与加载路径](https://developer.chrome.com/docs/extensions/mv2/architecture-overview#referring-to-files)
 3. 刷新 Chat 控制台。先确认 Chat 已登录且左侧显示原生弹幕发送框。插件使用该发送框和 Chat 当前账号。 [LAPLACE 发送设置](https://laplace.live/settings)
 4. 点 **SC 栏齿轮**打开插件设置，查看桥接状态并点击「复制桥接密码」。打开 **Chat 原生齿轮 → Event Bridge 集成**，填主机 `127.0.0.1`、端口 `9696` 和该密码，点击「连接」。若使用自定义端口，按插件设置显示的端口填写。可开启 Chat 的页面载入时自动连接。 [Event Bridge 官方文档](https://laplace.live/chat/event-bridge)
 5. 插件设置显示「本房间收到 … 条弹幕」后，即可留空 Chat 的原生发送框，点击纸飞机转发。

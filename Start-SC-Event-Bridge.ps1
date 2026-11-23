@@ -3,7 +3,7 @@ $ErrorActionPreference = 'Stop'
 $bridgeDir = Join-Path $env:LOCALAPPDATA 'LaplaceScEventBridge'
 $exe = Join-Path $bridgeDir 'leb-server-windows-x64.exe'
 $passwordFile = Join-Path $bridgeDir 'password.txt'
-$extensionConfig = Join-Path $PSScriptRoot 'laplace-sc-replay\bridge-instance.json'
+$extensionConfig = Join-Path $PSScriptRoot 'laplace-sc-relay\bridge-instance.json'
 $sha256 = 'F312BC92FF9988A6753A2D53745BAEA8AF9DCE9C17F4F94B105892AB98594AB1'
 $download = 'https://github.com/laplace-live/event-bridge/releases/download/%40laplace.live%2Fevent-bridge-server%400.3.21/leb-server-windows-x64.exe'
 

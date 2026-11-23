@@ -17,7 +17,8 @@
   const { findDuplicate } = globalThis.LaplaceScRecentChat;
   const dashboardSend = globalThis.LaplaceScDashboardSend;
   const buttonSelector = 'button, [role="button"]';
-  const settingsKey = 'laplaceScReplay';
+  const settingsKey = 'laplaceScRelay';
+  const previousSettingsKey = 'laplaceScReplay';
   const noticeDuration = 6500;
   const sendLabel = '发送为普通弹幕';
   const duplicateLabel = '这条内容刚有人发过';
@@ -496,8 +497,10 @@
     showSettings();
   });
 
-  chrome.storage.local.get(settingsKey).then((stored) => {
-    settings = { ...settings, ...stored[settingsKey] };
+  chrome.storage.local.get([settingsKey, previousSettingsKey]).then(async (stored) => {
+    const saved = stored[settingsKey] ?? stored[previousSettingsKey];
+    settings = { ...settings, ...saved };
+    if (stored[settingsKey] === undefined && saved) await chrome.storage.local.set({ [settingsKey]: saved });
   }).catch(() => announce('读取 SC 转发设置失败。')).finally(() => {
     const observer = new MutationObserver(scheduleScan);
     observer.observe(document.body, { childList: true, subtree: true, characterData: true, attributes: true,
