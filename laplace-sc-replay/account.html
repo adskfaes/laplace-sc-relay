@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>发送账号设置</title>
+    <link rel="stylesheet" href="account.css">
+    <script type="module" src="account.js"></script>
+  </head>
+  <body>
+    <main>
+      <p id="account" aria-live="polite">正在读取绑定状态</p>
+      <form id="binding" autocomplete="off">
+        <label for="mode">账号来源</label>
+        <select id="mode">
+          <option value="local">本机 Login Sync</option>
+          <option value="browser">已登录的 B 站会话</option>
+          <option value="sync">LAPLACE Login Sync 身份密钥</option>
+        </select>
+        <section id="local-settings">
+          <label for="local-token">本机身份密钥</label>
+          <div class="session-select">
+            <input id="local-token" type="password" autocomplete="off" spellcheck="false" maxlength="1024">
+            <button id="toggle-key" type="button" aria-controls="local-token" aria-pressed="false">显示</button>
+          </div>
+          <button id="generate" class="local-generate" type="button">生成当前登录账号的密钥</button>
+          <p class="hint">在当前窗口登录 B 站后生成。记录密钥后，可在这里切换发送账号。</p>
+          <label for="saved">已记录的账号</label>
+          <select id="saved" disabled><option value="">暂无记录</option></select>
+          <div class="actions">
+            <button id="use-saved" type="button" disabled>使用选中账号</button>
+            <button id="check-saved" type="button" disabled>检查会话</button>
+            <button id="refresh-saved" type="button" disabled>更新会话</button>
+            <button id="remove-saved" type="button" disabled>删除选中记录</button>
+          </div>
+        </section>
+        <section id="browser-settings" hidden>
+          <label for="store">B 站登录窗口</label>
+          <div class="session-select">
+            <select id="store" disabled><option value="">请选择</option></select>
+            <button id="sessions" type="button">读取浏览器会话</button>
+          </div>
+          <p id="browser-hint" class="hint">请在要绑定的窗口登录 B 站。选择无痕窗口时，需允许扩展在无痕模式运行。</p>
+        </section>
+        <section id="sync-settings" hidden>
+          <label for="token">身份密钥</label>
+          <input id="token" type="password" autocomplete="off" spellcheck="false" maxlength="1024">
+          <details>
+            <summary>同步服务读取授权</summary>
+            <label for="auth">服务端授权密钥（如有）</label>
+            <input id="auth" type="password" autocomplete="off" spellcheck="false" maxlength="1024">
+          </details>
+        </section>
+        <div class="actions">
+          <button type="submit" id="verify" disabled>验证并绑定</button>
+          <button type="button" id="forget" disabled>解除绑定</button>
+        </div>
+      </form>
+      <p id="status" role="status" hidden></p>
+    </main>
+  </body>
+</html>
