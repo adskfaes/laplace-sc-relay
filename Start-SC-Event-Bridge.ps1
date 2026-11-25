@@ -7,10 +7,22 @@ $extensionConfig = Join-Path $PSScriptRoot 'laplace-sc-relay\bridge-instance.jso
 $sha256 = 'F312BC92FF9988A6753A2D53745BAEA8AF9DCE9C17F4F94B105892AB98594AB1'
 $download = 'https://github.com/laplace-live/event-bridge/releases/download/%40laplace.live%2Fevent-bridge-server%400.3.21/leb-server-windows-x64.exe'
 
+function Get-PortListeners {
+    $rows = & (Join-Path $env:SystemRoot 'System32\netstat.exe') -ano
+    if ($LASTEXITCODE -ne 0) { throw 'Could not check local listening ports.' }
+    foreach ($row in $rows) {
+        # Listening TCP sockets have an unspecified peer and peer port zero.
+        if ($row -match "^\s*TCP\s+(\S+):$Port\s+(?:0\.0\.0\.0|\[::\]):0\s+.+?\s+(\d+)\s*$") {
+            [pscustomobject]@{ Address = $Matches[1]; ProcessId = [int]$Matches[2] }
+        }
+    }
+}
+
 New-Item -ItemType Directory -Force -Path $bridgeDir | Out-Null
-$listening = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue
+$listening = Get-PortListeners
 if ($listening) {
-    $process = Get-Process -Id ($listening | Select-Object -First 1).OwningProcess
+    $local = $listening | Where-Object Address -eq '127.0.0.1' | Select-Object -First 1
+    if ($local) { $process = Get-Process -Id $local.ProcessId -ErrorAction SilentlyContinue }
     if ($process.Path -ne $exe -or -not (Test-Path -LiteralPath $passwordFile)) {
         throw "Port $Port is in use. Choose another port with -Port."
     }
@@ -37,7 +49,7 @@ if ($listening) {
     do {
         $process.Refresh()
         if ($process.HasExited) { throw "Event Bridge stopped with exit code $($process.ExitCode)." }
-        $ready = Get-NetTCPConnection -LocalAddress '127.0.0.1' -LocalPort $Port -State Listen -OwningProcess $process.Id -ErrorAction SilentlyContinue
+        $ready = Get-PortListeners | Where-Object { $_.Address -eq '127.0.0.1' -and $_.ProcessId -eq $process.Id }
         if (-not $ready) { Start-Sleep -Milliseconds 200 }
     } until ($ready -or (Get-Date) -ge $deadline)
     if (-not $ready) { throw 'Event Bridge did not begin listening.' }

@@ -1,5 +1,7 @@
 const bridgeForm = document.querySelector('#bridge-form');
 const bridgeStatus = document.querySelector('#bridge-status');
+const bridgeStart = document.querySelector('#bridge-start');
+const bridgeStartStatus = document.querySelector('#bridge-start-status');
 const bridgeAddressPort = document.querySelector('#bridge-address-port');
 const bridgePort = document.querySelector('#bridge-port');
 const bridgeToken = document.querySelector('#bridge-token');
@@ -8,6 +10,8 @@ const bridgeAdvanced = document.querySelector('#bridge-advanced');
 const bridgeSave = document.querySelector('#bridge-save');
 const copyStatus = document.querySelector('#copy-status');
 let refreshing = false;
+let starting = false;
+let connected = false;
 
 if (new URLSearchParams(location.search).get('chat') === 'ready') {
   document.querySelector('#chat-status').textContent = '已检测到原生发送框，将使用 Chat 当前账号。';
@@ -27,6 +31,9 @@ function showStatus(node, text, error = false) {
 }
 
 function renderBridge({ port, hasToken, state, received }, fill = false) {
+  connected = state === 'connected';
+  bridgeStart.disabled = starting || connected;
+  if (connected) bridgeStartStatus.hidden = true;
   if (fill) {
     bridgePort.value = port;
     bridgeToken.value = '';
@@ -53,9 +60,37 @@ async function refreshBridge(fill = false) {
     if (fill || !bridgeSave.disabled) showStatus(bridgeStatus, error.message, true);
   } finally {
     refreshing = false;
-    if (fill) bridgeSave.disabled = false;
+    if (fill) {
+      bridgeSave.disabled = false;
+      bridgeStart.disabled = starting || connected;
+    }
   }
 }
+
+bridgeStart.addEventListener('click', async (event) => {
+  if (!event.isTrusted || bridgeStart.disabled) return;
+  starting = true;
+  bridgeStart.disabled = true;
+  showStatus(bridgeStartStatus, '正在启动本机桥接…');
+  try {
+    const granted = await chrome.permissions.request({ permissions: ['nativeMessaging'] });
+    if (!granted) {
+      showStatus(bridgeStartStatus, '浏览器未授权启动本机桥接。', true);
+      return;
+    }
+    const { bridge, startedPort } = await request('lsc:bridge-start');
+    renderBridge(bridge);
+    if (!connected) {
+      if (startedPort === bridge.port) showStatus(bridgeStartStatus, '本机桥接服务已启动。');
+      else showStatus(bridgeStartStatus, `本机桥接已在端口 ${startedPort} 启动。插件当前使用端口 ${bridge.port}。`, true);
+    }
+  } catch (error) {
+    showStatus(bridgeStartStatus, error.message, true);
+  } finally {
+    starting = false;
+    bridgeStart.disabled = connected;
+  }
+});
 
 bridgeForm.addEventListener('submit', async (event) => {
   event.preventDefault();

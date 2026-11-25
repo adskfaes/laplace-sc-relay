@@ -159,6 +159,13 @@ export async function configureBridge(input) {
   apply(next);
 }
 
+export function reconnectBridge() {
+  if (state !== 'disconnected') return;
+  clearTimeout(retry);
+  retryDelay = 1000;
+  connect();
+}
+
 export function bridgeStatus(room = '') {
   return { port: config.port, hasToken: Boolean(config.token), state, received: received.get(room) ?? 0 };
 }

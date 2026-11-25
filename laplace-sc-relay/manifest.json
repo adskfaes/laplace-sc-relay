@@ -1,11 +1,12 @@
 {
   "manifest_version": 3,
   "name": "LAPLACE SC 转发",
-  "version": "0.6.1",
+  "version": "0.6.2",
   "description": "从 LAPLACE Chat 控制台把醒目留言转为普通弹幕。",
   "homepage_url": "https://github.com/adskfaes/laplace-sc-relay",
   "minimum_chrome_version": "120",
   "permissions": ["storage"],
+  "optional_permissions": ["nativeMessaging"],
   "host_permissions": ["http://127.0.0.1/*"],
   "background": { "service_worker": "background.js", "type": "module" },
   "web_accessible_resources": [

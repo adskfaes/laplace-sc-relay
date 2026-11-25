@@ -1,5 +1,5 @@
 import { bridgeHistory, bridgePassword, bridgeReady, bridgeSession, bridgeStatus, configureBridge, expectBridgeEcho,
-  onBridgeMessage } from './event-bridge.js';
+  onBridgeMessage, reconnectBridge } from './event-bridge.js';
 import { comparableMessages, createCoverage, findDuplicate, normalize } from './recent-chat.js';
 
 const recentForwardsKey = 'lscRecentForwards';
@@ -13,6 +13,22 @@ const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 let batch;
 let nextPostAt = 0;
 let pending = Promise.resolve();
+let bridgeStartup;
+
+async function startLocalBridge() {
+  const host = `com.laplace_sc_relay.${chrome.runtime.id}`;
+  const result = await chrome.runtime.sendNativeMessage(host, { action: 'start' }).catch((error) => {
+    if (/not found|access.*forbidden/iu.test(error.message)) {
+      throw new Error('未找到本机启动器。请从当前安装目录重新运行 Install-SC-Relay.cmd（Edge 使用 -Browser Edge）。');
+    }
+    throw new Error('无法调用本机启动器。请重新运行 Install-SC-Relay.cmd。');
+  });
+  if (!result?.ok || !Number.isInteger(result.port) || result.port < 1 || result.port > 65535) {
+    throw new Error('启动本机桥接失败。请运行 Start-SC-Event-Bridge.cmd 查看错误。');
+  }
+  if (bridgeStatus().port === result.port) reconnectBridge();
+  return result.port;
+}
 
 function dropBatch() {
   batch?.echo?.cancel();
@@ -70,6 +86,11 @@ async function handle(message, sender) {
   if (sender.origin === connectionOrigin && `${url.origin}${url.pathname}` === connectionUrl) {
     await bridgeReady;
     if (message.type === 'lsc:bridge-password') return { password: bridgePassword() };
+    if (message.type === 'lsc:bridge-start') {
+      bridgeStartup ??= startLocalBridge().finally(() => { bridgeStartup = undefined; });
+      const startedPort = await bridgeStartup;
+      return { bridge: bridgeStatus(url.searchParams.get('room')), startedPort };
+    }
     if (message.type === 'lsc:bridge-save') await configureBridge(message);
     if (message.type === 'lsc:bridge-save' || message.type === 'lsc:bridge-status') {
       return { bridge: bridgeStatus(url.searchParams.get('room')) };
@@ -172,9 +193,10 @@ async function handle(message, sender) {
 
 chrome.runtime.onMessage.addListener((message, sender, reply) => {
   if (typeof message?.type !== 'string' || !message.type.startsWith('lsc:')) return false;
-  const result = pending.then(() => handle(message, sender));
-  // Waiting for an event must not block connection settings or batch cancellation.
-  if (message.type !== 'lsc:dashboard-echo') pending = result.catch(() => {});
+  const startingBridge = message.type === 'lsc:bridge-start';
+  const result = startingBridge ? handle(message, sender) : pending.then(() => handle(message, sender));
+  // Bridge startup and echo waits must not block status requests or batch cancellation.
+  if (!startingBridge && message.type !== 'lsc:dashboard-echo') pending = result.catch(() => {});
   void result.then((data) => reply({ ok: true, ...data }), (error) => {
     const message = error?.message || '';
     reply({ ok: false, error: /[\u3400-\u9fff]/u.test(message) ? message : '请求失败，请检查 Chat 和 Event Bridge 的连接。' });
